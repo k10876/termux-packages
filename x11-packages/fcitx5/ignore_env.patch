@@ -1,0 +1,76 @@
+--- a/src/ui/classic/portalsettingmonitor.cpp
++++ b/src/ui/classic/portalsettingmonitor.cpp
+@@ -1,10 +1,11 @@
+ /*
+  * SPDX-FileCopyrightText: 2023-2023 CSSlayer <wengxt@gmail.com>
+  *
+  * SPDX-License-Identifier: LGPL-2.1-or-later
+  *
+  */
+
++#include <cstdlib>
+ #include "portalsettingmonitor.h"
+ #include <cstddef>
+ #include <memory>
+ #include <string>
+@@ -150,6 +151,15 @@ std::unique_ptr<dbus::Slot>
+ PortalSettingMonitor::queryValue(const PortalSettingKey &key) {
+     auto call = bus_.createMethodCall(
+         XDG_PORTAL_DESKTOP_SERVICE, XDG_PORTAL_DESKTOP_PATH,
+         XDG_PORTAL_DESKTOP_SETTINGS_INTERFACE, "Read");
+     call << key.interface << key.name;
+     return call.callAsync(5000000, [this, key](dbus::Message &msg) {
+         // Lookup the corresponding data.
+         auto *data = findValue(watcherData_, key);
+         if (!data) {
+             return true;
+         }
+         if (msg.isError()) {
+             CLASSICUI_ERROR() << "DBus call error: " << msg.errorName() << " "
+                               << msg.errorMessage();
+             if (msg.errorName() == "org.freedesktop.DBus.Error.NoReply") {
+                 if (data->retry < PORTAL_RETRY_LIMIT) {
+                     data->retry += 1;
+                     data->querySlot = queryValue(key);
+                 } else {
+                     CLASSICUI_ERROR() << "Query portal value reached retry limit.";
+                 }
+             }
+             // If the portal service isn't available, try reading from an environment variable.
+             else if (msg.errorName() == "org.freedesktop.DBus.Error.ServiceUnknown") {
+                 CLASSICUI_ERROR() << "Portal service unavailable. "
+                                   << "Attempting to fallback to environment variable FCITX5_DEFAULT_SETTINGS.";
+                 data->querySlot.reset();
+                 dbus::Variant fallbackVariant;
+                 const char *envVal = std::getenv("FCITX5_DEFAULT_SETTINGS");
+                 if (envVal) {
+                     fallbackVariant = dbus::Variant(std::string(envVal));
+                     CLASSICUI_INFO() << "Using FCITX5_DEFAULT_SETTINGS: " << envVal;
+                 } else {
+                     CLASSICUI_ERROR() << "No FCITX5_DEFAULT_SETTINGS environment variable found, using empty variant.";
+                 }
+                 auto view = watcherMap_.view(key);
+                 for (auto &entry : view) {
+                     entry(fallbackVariant);
+                 }
+             }
+             return true;
+         }
+         if (msg.signature() != "v") {
+             return true;
+         }
+         dbus::Variant variant;
+         msg >> variant;
+         if (variant.signature() == "v") {
+             variant = variant.dataAs<dbus::Variant>();
+         }
+         auto view = watcherMap_.view(key);
+         for (auto &entry : view) {
+             entry(variant);
+         }
+         data->querySlot.reset();
+         return false;
+     });
+ }
+ 
+ } // namespace fcitx
